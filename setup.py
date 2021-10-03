@@ -15,8 +15,12 @@ setup(
     version=__version__.__version__,
     author='lotcarnage',
     author_email='lotcarnage@gmail.com',
+    url='https://github.com/lotcarnage/nndspack',
     packages=['nndspack'],
+    license='MIT',
     install_requires=['numpy'],
+    python_requires='>=3.8',
+    description='Neural Network Data Set Packing module',
     long_description_content_type='text/markdown',
     long_description=_read_description()
 )
