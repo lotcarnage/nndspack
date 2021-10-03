@@ -4,7 +4,7 @@ from nndspack import __version__
 
 
 def _read_description():
-    description_file_path = os.path.join(os.path.dirname(__file__), 'description.md')
+    description_file_path = os.path.join(os.path.dirname(__file__), 'document/description.md')
     with open(description_file_path, 'rt', encoding='utf-8') as description_file:
         description_text = description_file.read()
     return description_text
