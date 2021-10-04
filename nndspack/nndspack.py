@@ -1,5 +1,6 @@
-import struct
 import os
+import struct
+
 import numpy
 
 __all__ = [
@@ -135,3 +136,50 @@ class Loader:
         else:
             y_datum = numpy.array(y_datum).astype(self.__y_v_type).reshape(*self.__y_shape)
         return x_datum, y_datum
+
+
+class BatchLoader:
+    def __init__(self, filename, batch_size, down_samples=None):
+        self.__loader = Loader(filename)
+        self.__batch_size = batch_size
+        self.__count = self.__loader.count()
+        self.__times = 0
+        self.__down_samples = down_samples
+
+    def __del__(self):
+        del self.__loader
+
+    def __iter__(self):
+        self.__times = 0
+        return self
+
+    def __len__(self):
+        count = self.__count // self.__down_samples if self.__down_samples is not None else self.__count
+        return (count + self.__batch_size - 1) // self.__batch_size
+
+    def __next__(self):
+        step_size = self.__down_samples if self.__down_samples is not None else 1
+
+        head_index = self.__times * self.__batch_size * step_size
+        tail_index = (self.__times + 1) * self.__batch_size * step_size
+        if self.__count <= head_index:
+            raise StopIteration()
+        tail_index = min(tail_index, self.__count)
+        data = [self.__loader.load(index) for index in range(head_index, tail_index, step_size)]
+        n = len(data)
+        x_shape = data[0][0].shape
+        if len(x_shape) == 1 and x_shape[0] == 1:
+            x_batch = numpy.array([x_datum for x_datum, _ in data])
+        else:
+            x_batch = numpy.zeros(shape=(n, *x_shape))
+            for i in range(n):
+                x_batch[i] = data[i][0]
+        y_shape = data[0][1].shape
+        if len(y_shape) == 1 and y_shape[0] == 1:
+            y_batch = numpy.array([y_datum for _, y_datum in data])
+        else:
+            y_batch = numpy.zeros(shape=(n, *y_shape))
+            for i in range(n):
+                y_batch[i] = data[i][1]
+        self.__times += 1
+        return x_batch, y_batch
