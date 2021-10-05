@@ -37,63 +37,104 @@ _TYPE_TO_STRUCT_FORMAT = {
     numpy.bool_: '?'
 }
 
+_ACCEPTABLE_DATA_TYPES = [
+    numpy.ndarray,
+    numpy.int8, numpy.uint8,
+    numpy.int16, numpy.uint16,
+    numpy.int32, numpy.uint32,
+    numpy.int64, numpy.uint64,
+    numpy.float16, numpy.float32, numpy.float64,
+    numpy.bool_
+]
 
-def _make_header(total_count, x_datum_sample: numpy.ndarray, y_datum_sample: numpy.ndarray):
-    x_v_type = _TYPE_TO_CODE_DICT[x_datum_sample.dtype.type]
-    y_v_type = _TYPE_TO_CODE_DICT[y_datum_sample.dtype.type]
-    is_x_array = type(x_datum_sample) == numpy.ndarray
-    is_y_array = type(y_datum_sample) == numpy.ndarray
-    if is_x_array:
-        x_dim = len(x_datum_sample.shape)
-        x_shape = x_datum_sample.shape
+
+def _make_data_header(datum_sample):
+    if type(datum_sample) not in _ACCEPTABLE_DATA_TYPES:
+        return None
+    element_type_code = _TYPE_TO_CODE_DICT[datum_sample.dtype.type]
+    if type(datum_sample) == numpy.ndarray:
+        dim = len(datum_sample.shape)
+        shape = datum_sample.shape
     else:
-        x_dim = 1
-        x_shape = (1,)
-    if is_y_array:
-        y_dim = len(y_datum_sample.shape)
-        y_shape = y_datum_sample.shape
-    else:
-        y_dim = 1
-        y_shape = (1,)
-    header_format = f'IBBBB{x_dim if x_dim != 0 else 1}I{y_dim if y_dim != 0 else 1}I'
-    return struct.pack(header_format, total_count, x_v_type, y_v_type, x_dim, y_dim, *x_shape, *y_shape)
+        dim = 1
+        shape = (1,)
+    data_format = f'HH{dim}I'
+    return struct.pack(data_format, element_type_code, dim, *shape)
+
+
+def _read_data_header(fp):
+    element_type_code, dim = struct.unpack('HH', fp.read(4))
+    element_type = _CODE_TO_TYPE_DICT[element_type_code]
+    shape_format = f'{dim}I'
+    shape = tuple(struct.unpack(shape_format, fp.read(dim * 4)))
+    return {'element_type': element_type, 'shape': shape}
+
+
+def _make_header(total_count, sample_data_record):
+    num_columns = len(sample_data_record)
+    headers = [_make_data_header(datum_sample) for datum_sample in sample_data_record]
+    print(type(headers[0]))
+    print(headers)
+    data_headers = bytes().join(headers)
+    print(len(data_headers), data_headers)
+    header_format = f'II{len(data_headers)}B'
+    return struct.pack(header_format, total_count, num_columns, *data_headers)
 
 
 def _read_header(fp):
-    total_count = struct.unpack('I', fp.read(4))[0]
-    x_v_type = _CODE_TO_TYPE_DICT[struct.unpack('B', fp.read(1))[0]]
-    y_v_type = _CODE_TO_TYPE_DICT[struct.unpack('B', fp.read(1))[0]]
-    x_dim, y_dim = struct.unpack('BB', fp.read(2))
-    format = f'{x_dim}I{y_dim}I'
-    values = struct.unpack(format, fp.read(4 * (x_dim + y_dim)))
-    x_shape = tuple(values[:x_dim])
-    y_shape = tuple(values[x_dim:])
+    total_count, num_columns = struct.unpack('II', fp.read(8))
+    print(total_count, num_columns)
+    data_headers = [_read_data_header(fp) for _ in range(num_columns)]
+    print(data_headers)
     header_size = fp.tell()
-    return header_size, total_count, x_v_type, y_v_type, x_shape, y_shape
+    return header_size, total_count, data_headers
+
+
+def _make_column_format(column):
+    num_elements = numpy.prod(column.shape) if column.shape != () else 1
+    struct_format = _TYPE_TO_STRUCT_FORMAT[column.dtype.type]
+    return num_elements, f'{num_elements}{struct_format}'
+
+
+def _make_column_info(data_header):
+    shape = data_header['shape']
+    element_type = data_header['element_type']
+    num_elements = int(numpy.prod(shape))
+    struct_format = _TYPE_TO_STRUCT_FORMAT[element_type]
+    byte_length = num_elements * _TYPE_TO_NBYTES_DICT[element_type]
+    is_scalar = (len(shape) == 1 and shape[0] == 1)
+    return {
+        'element_type': element_type,
+        'shape': shape,
+        'num_elements': num_elements,
+        'struct_format': f'{num_elements}{struct_format}',
+        'byte_length': byte_length,
+        'is_scalar': is_scalar
+    }
 
 
 class Packer:
-    def __init__(self, filename, x_datum_sample: numpy.ndarray, y_datum_sample: numpy.ndarray):
+    def __init__(self, filename, *sample_data_record):
+        if type(sample_data_record) != tuple:
+            raise Exception('type error')
+        for datum_sample in sample_data_record:
+            if type(datum_sample) not in _ACCEPTABLE_DATA_TYPES:
+                raise Exception('type error')
         self.__fp = open(filename, 'wb')
         self.__total_count = 0
-        self.__x_datum_n = numpy.prod(x_datum_sample.shape) if x_datum_sample.shape != () else 1
-        self.__y_datum_n = numpy.prod(y_datum_sample.shape) if y_datum_sample.shape != () else 1
-        x_datum_format = f'{self.__x_datum_n}{_TYPE_TO_STRUCT_FORMAT[x_datum_sample.dtype.type]}'
-        y_datum_format = f'{self.__y_datum_n}{_TYPE_TO_STRUCT_FORMAT[y_datum_sample.dtype.type]}'
-        self.__block_format = f'{x_datum_format}{y_datum_format}'
-        self.__fp.write(_make_header(self.__total_count, x_datum_sample, y_datum_sample))
+        self.__column_formats = [_make_column_format(column) for column in sample_data_record]
+        self.__fp.write(_make_header(self.__total_count, sample_data_record))
 
     def __del__(self):
         self.__fp.seek(0, os.SEEK_SET)
         self.__fp.write(struct.pack('I', self.__total_count))
         self.__fp.close()
 
-    def pack(self, x_datum: numpy.ndarray, y_datum: numpy.ndarray):
-        is_x_array = type(x_datum) == numpy.ndarray
-        is_y_array = type(y_datum) == numpy.ndarray
-        x_datum_writable = x_datum.reshape(self.__x_datum_n).tolist() if is_x_array else (x_datum, )
-        y_datum_writable = y_datum.reshape(self.__y_datum_n).tolist() if is_y_array else (y_datum, )
-        self.__fp.write(struct.pack(self.__block_format, *x_datum_writable, *y_datum_writable))
+    def pack(self, *data_record):
+        for column, expected_column_format in zip(data_record, self.__column_formats):
+            is_array = type(column) == numpy.ndarray
+            writable_values = column.reshape(expected_column_format[0]).tolist() if is_array else (column, )
+            self.__fp.write(struct.pack(expected_column_format[1], *writable_values))
         self.__total_count += 1
         return None
 
@@ -101,17 +142,14 @@ class Packer:
 class Loader:
     def __init__(self, filename):
         self.__fp = open(filename, 'rb')
-        header_size, total_count, x_v_type, y_v_type, x_shape, y_shape = _read_header(self.__fp)
+        header_size, total_count, data_headers = _read_header(self.__fp)
         self.__header_size = header_size
         self.__total_count = total_count
-        self.__x_v_type = x_v_type
-        self.__y_v_type = y_v_type
-        self.__x_shape = x_shape
-        self.__y_shape = y_shape
-        self.__x_n = numpy.prod(x_shape)
-        self.__y_n = numpy.prod(y_shape)
-        self.__block_size = self.__x_n * _TYPE_TO_NBYTES_DICT[x_v_type] + self.__y_n * _TYPE_TO_NBYTES_DICT[y_v_type]
-        self.__block_format = f'{self.__x_n}{_TYPE_TO_STRUCT_FORMAT[x_v_type]}{self.__y_n}{_TYPE_TO_STRUCT_FORMAT[y_v_type]}'
+        self.__column_info = [_make_column_info(data_header) for data_header in data_headers]
+        self.__block_size = sum([colmun_info['byte_length'] for colmun_info in self.__column_info])
+        print(self.__block_size)
+        print([colmun_info['byte_length'] for colmun_info in self.__column_info])
+        self.__block_format = ''.join([colmun_info['struct_format'] for colmun_info in self.__column_info])
 
     def __del__(self):
         self.__fp.close()
@@ -124,18 +162,17 @@ class Loader:
             raise Exception("存在しないデータのインデックスが指定されました。")
         self.__fp.seek(self.__header_size + self.__block_size * index, os.SEEK_SET)
         values = struct.unpack(self.__block_format, self.__fp.read(self.__block_size))
-        x_datum = values[:self.__x_n]
-        y_datum = values[self.__x_n:]
-        if len(self.__x_shape) == 1 and self.__x_shape[0] == 1:
-            x_datum = self.__x_v_type(x_datum[0])
-        else:
-            x_datum = numpy.array(x_datum).astype(self.__x_v_type).reshape(*self.__x_shape)
-
-        if len(self.__y_shape) == 1 and self.__y_shape[0] == 1:
-            y_datum = self.__y_v_type(y_datum[0])
-        else:
-            y_datum = numpy.array(y_datum).astype(self.__y_v_type).reshape(*self.__y_shape)
-        return x_datum, y_datum
+        data_record = []
+        head_index = 0
+        for column_info in self.__column_info:
+            tail_index = column_info['num_elements']
+            datum = values[head_index:tail_index]
+            if column_info['is_scalar']:
+                datum = column_info['element_type'](datum[0])
+            else:
+                datum = numpy.array(datum).astype(column_info['element_type']).reshape(*(column_info['shape']))
+            data_record.append(datum)
+        return tuple(data_record)
 
 
 class BatchLoader:
