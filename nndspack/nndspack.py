@@ -5,7 +5,8 @@ import numpy
 
 __all__ = [
     'Packer',
-    'Loader'
+    'Loader',
+    'BatchLoader'
 ]
 
 _TYPE_TO_CODE_DICT = {
@@ -72,20 +73,14 @@ def _read_data_header(fp):
 
 def _make_header(total_count, sample_data_record):
     num_columns = len(sample_data_record)
-    headers = [_make_data_header(datum_sample) for datum_sample in sample_data_record]
-    print(type(headers[0]))
-    print(headers)
-    data_headers = bytes().join(headers)
-    print(len(data_headers), data_headers)
+    data_headers = bytes().join([_make_data_header(datum_sample) for datum_sample in sample_data_record])
     header_format = f'II{len(data_headers)}B'
     return struct.pack(header_format, total_count, num_columns, *data_headers)
 
 
 def _read_header(fp):
     total_count, num_columns = struct.unpack('II', fp.read(8))
-    print(total_count, num_columns)
     data_headers = [_read_data_header(fp) for _ in range(num_columns)]
-    print(data_headers)
     header_size = fp.tell()
     return header_size, total_count, data_headers
 
@@ -124,6 +119,7 @@ class Packer:
         self.__total_count = 0
         self.__column_formats = [_make_column_format(column) for column in sample_data_record]
         self.__fp.write(_make_header(self.__total_count, sample_data_record))
+        self.__num_colmuns = len(sample_data_record)
 
     def __del__(self):
         self.__fp.seek(0, os.SEEK_SET)
@@ -131,6 +127,8 @@ class Packer:
         self.__fp.close()
 
     def pack(self, *data_record):
+        if self.__num_colmuns != len(data_record):
+            raise Exception('カラム数が合っていません。')
         for column, expected_column_format in zip(data_record, self.__column_formats):
             is_array = type(column) == numpy.ndarray
             writable_values = column.reshape(expected_column_format[0]).tolist() if is_array else (column, )
@@ -147,8 +145,6 @@ class Loader:
         self.__total_count = total_count
         self.__column_info = [_make_column_info(data_header) for data_header in data_headers]
         self.__block_size = sum([colmun_info['byte_length'] for colmun_info in self.__column_info])
-        print(self.__block_size)
-        print([colmun_info['byte_length'] for colmun_info in self.__column_info])
         self.__block_format = ''.join([colmun_info['struct_format'] for colmun_info in self.__column_info])
 
     def __del__(self):
@@ -202,21 +198,19 @@ class BatchLoader:
         if self.__count <= head_index:
             raise StopIteration()
         tail_index = min(tail_index, self.__count)
-        data = [self.__loader.load(index) for index in range(head_index, tail_index, step_size)]
-        n = len(data)
-        x_shape = data[0][0].shape
-        if len(x_shape) == 1 and x_shape[0] == 1:
-            x_batch = numpy.array([x_datum for x_datum, _ in data])
-        else:
-            x_batch = numpy.zeros(shape=(n, *x_shape))
-            for i in range(n):
-                x_batch[i] = data[i][0]
-        y_shape = data[0][1].shape
-        if len(y_shape) == 1 and y_shape[0] == 1:
-            y_batch = numpy.array([y_datum for _, y_datum in data])
-        else:
-            y_batch = numpy.zeros(shape=(n, *y_shape))
-            for i in range(n):
-                y_batch[i] = data[i][1]
+        records = [self.__loader.load(index) for index in range(head_index, tail_index, step_size)]
+        n = len(records)
+        num_column = len(records[0])
+
+        batches = []
+        for column_i in range(num_column):
+            shape = records[0][column_i].shape
+            if len(shape) == 1 and shape[0] == 1:
+                batch = numpy.array([record[column_i] for record in records])
+            else:
+                batch = numpy.zeros(shape=(n, *shape))
+                for i in range(n):
+                    batch[i] = records[i][column_i]
+            batches.append(batch)
         self.__times += 1
-        return x_batch, y_batch
+        return tuple(batches)
