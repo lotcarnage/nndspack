@@ -12,7 +12,7 @@ def _read_description():
 
 setup(
     name='nndspack',
-    version=__version__.__version__,
+    version=__version__,
     author='lotcarnage',
     author_email='lotcarnage@gmail.com',
     url='https://github.com/lotcarnage/nndspack',
