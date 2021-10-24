@@ -1,13 +1,12 @@
+""" Neural Network Dataset Pack
+
+ニューラルネットワークの学習等で扱うデータセットをファイルに保存し、
+ランダムアクセスで読み込んでくるための機能を提供するモジュールです。
+"""
 import os
 import struct
-
 import numpy
 
-__all__ = [
-    'Packer',
-    'Loader',
-    'BatchLoader'
-]
 
 _TYPE_TO_CODE_DICT = {
     numpy.int8: 0, numpy.int16: 1, numpy.int32: 2, numpy.int64: 3,
@@ -109,13 +108,27 @@ def _make_column_info(data_header):
 
 
 class Packer:
-    def __init__(self, filename, *sample_data_record):
+    """ Packerクラス
+
+    ファイルに対してデータレコードを順次書き込む機能を提供します。
+    """
+    def __init__(self, packfile_path: str, *sample_data_record):
+        """コンストラクタ
+
+        パックファイル名とパック対象のデータ構造をサンプルで指定してパックファイルを作成します。
+        既存ファイルが存在する場合は内容を消去して新規に作成します。
+        そのため、既存ファイルに対する追記はできません。
+
+        :arg str packfile_path: 作成するパックファイル名
+        :arg * sample_data_record: パック対象のデータフォーマットを指定するためのデータサンプル(可変長引数)
+        """
+
         if type(sample_data_record) != tuple:
             raise Exception('type error')
         for datum_sample in sample_data_record:
             if type(datum_sample) not in _ACCEPTABLE_DATA_TYPES:
                 raise Exception('type error')
-        self.__fp = open(filename, 'wb')
+        self.__fp = open(packfile_path, 'wb')
         self.__total_count = 0
         self.__column_formats = [_make_column_format(column) for column in sample_data_record]
         self.__fp.write(_make_header(self.__total_count, sample_data_record))
@@ -127,6 +140,12 @@ class Packer:
         self.__fp.close()
 
     def pack(self, *data_record):
+        """ 指定したデータレコードをパックします
+
+        任意長引数で指定したデータレコードをパックファイルに対して追記で保存します。
+
+        :arg * data_record: パック対象のデータレコード(コンストラクタで指定したサンプルと同じ構造でなければならない)
+        """
         if self.__num_colmuns != len(data_record):
             raise Exception('カラム数が合っていません。')
         for column, expected_column_format in zip(data_record, self.__column_formats):
@@ -138,8 +157,21 @@ class Packer:
 
 
 class Loader:
-    def __init__(self, filename):
-        self.__fp = open(filename, 'rb')
+    """ Packerクラス
+
+    パックファイルに対して指定したインデックス値のデータレコードを読み込む機能を提供します。
+    """
+    def __init__(self, packfile_path: str):
+        """ コンストラクタ
+
+        パックファイル名を指定して既存のパックファイルを開きます。
+        データ構造はパックファイル内に記録されているデータ構造になります。
+        開いたパックファイルに対してはランダムアクセスでデータレコードを読み込むことができます。
+
+        :arg str packfile_path: 開くパックファイル名
+        """
+
+        self.__fp = open(packfile_path, 'rb')
         header_size, total_count, data_headers = _read_header(self.__fp)
         self.__header_size = header_size
         self.__total_count = total_count
@@ -151,9 +183,19 @@ class Loader:
         self.__fp.close()
 
     def count(self):
+        """パックファイルが含むレコード数"""
         return self.__total_count
 
-    def load(self, index):
+    def __len__(self):
+        return self.count()
+
+    def load(self, index: int):
+        """パックファイルから指定したインデックスのデータレコードを読み込む
+
+        指定したインデックスのデータレコードを読み込みます。
+
+        arg: int index: 読み込み対象のデータレコードのインデックス値
+        """
         if self.__total_count <= index:
             raise Exception("存在しないデータのインデックスが指定されました。")
         self.__fp.seek(self.__header_size + self.__block_size * index, os.SEEK_SET)
@@ -172,8 +214,22 @@ class Loader:
 
 
 class BatchLoader:
-    def __init__(self, filename, batch_size, down_samples=None):
-        self.__loader = Loader(filename)
+    """ BatchLoaderクラス
+
+    指定したバッチサイズ単位でデータレコードをロードするイテレータを提供します。
+    """
+    def __init__(self, packfile_path: str, batch_size: int, down_samples: int = None):
+        """ コンストラクタ
+
+        パックファイル名を指定して既存のパックファイルを開きます。
+        データ構造はパックファイル内に記録されているデータ構造になります。
+        インスタンスはbatch_sizeで指定したレコード数単位でデータを読み込むイテレータを提供します。
+
+        :arg str packfile_path: 開くパックファイル名
+        :arg int batch_size: バッチサイズ
+        :arg down_samples: データレコードを間引く単位
+        """
+        self.__loader = Loader(packfile_path)
         self.__batch_size = batch_size
         self.__count = self.__loader.count()
         self.__times = 0
